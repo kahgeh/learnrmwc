@@ -1,0 +1,115 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Parameters:
+  Name:
+    Type: String
+    Default: samplewebapp
+  Subnets:
+    Type: AWS::SSM::Parameter::Value<List<AWS::EC2::Subnet::Id>>
+    Default: /global/subnets
+  SecurityGroup:
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /global/defaultSecurityGroup
+  HostedZoneName:
+    Type: String
+    Default: kahgeh.com
+  ListenerArn:
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /global/alb/listenerArn
+  LoadBalancerCanonicalHostedZoneID:
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /global/alb/canonicalHostedZoneID
+  LoadBalancerDNSName:
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /global/alb/dnsName
+  PstoreKeyArn:
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /global/pstoreKey
+  PstorePrefix:
+    Type: String
+    Default: serverlesss
+Transform: ["AWS::Serverless-2016-10-31"]
+Resources:
+  Function:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: not-required
+      Runtime: provided
+      Role: !GetAtt Role.Arn
+      MemorySize: 256
+      CodeUri: out/SampleWebApp.Bff.zip
+      Timeout: 60
+      AutoPublishAlias: live
+      DeploymentPreference:
+        Type: AllAtOnce
+      Tags:
+        env: devtest
+  Role:
+    Type: AWS::IAM::Role
+    Properties:
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: [lambda.amazonaws.com]
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: AllowGetParam
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ssm:GetParameters
+                  - ssm:GetParameter
+                  - ssm:GetParametersByPath
+                  - ssm:PutParameter
+                  - ssm:AddTagsToResource
+                Resource:
+                  - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${PstorePrefix}/Dotnet.Sample/*
+        - PolicyName: AllowDecryptParam
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Action:
+                  - kms:Decrypt
+                  - kms:Encrypt
+                Effect: Allow
+                Resource: !Ref PstoreKeyArn
+  TargetGroup:
+    DependsOn: [Permission]
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      TargetType: lambda
+      Targets:
+        - Id: !Ref Function.Alias
+  Permission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      Principal: elasticloadbalancing.amazonaws.com
+      SourceArn: !Sub arn:aws:elasticloadbalancing:${AWS::Region}:${AWS::AccountId}:targetgroup/*
+      FunctionName: !Ref Function.Alias
+  ListenerRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      Actions:
+        - TargetGroupArn: !Ref TargetGroup
+          Type: forward
+      Conditions:
+        - Field: host-header
+          HostHeaderConfig:
+            Values:
+              - !Sub ${Name}.${HostedZoneName}
+      ListenerArn: !Ref ListenerArn
+      Priority: 1
+  RecordSet:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneName: !Sub ${HostedZoneName}.
+      Name: !Sub ${Name}.${HostedZoneName}
+      Type: A
+      AliasTarget:
+        HostedZoneId: !Ref LoadBalancerCanonicalHostedZoneID
+        DNSName: !Ref LoadBalancerDNSName
